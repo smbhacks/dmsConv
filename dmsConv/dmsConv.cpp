@@ -4,7 +4,9 @@
 #include <format>
 #include <filesystem>
 
-const uint16_t TRANSPARENT_RGB = 0x0001;
+#include "bmp.h"
+
+char TRANSPARENT_RGB[] = { 0x00, 0x01 };
 
 int main(int argc, char* argv[])
 {
@@ -82,8 +84,6 @@ int main(int argc, char* argv[])
 
 	for (uint32_t curImage = 0; curImage < fileNumImages; curImage++)
 	{
-		std::ofstream output(std::format("{}_{}.pam", filename, curImage), std::ios::binary);
-
 		// read image header
 		uint32_t imageWidth;
 		uint32_t imageHeight;
@@ -101,6 +101,8 @@ int main(int argc, char* argv[])
 		std::cout << std::format("\n\tWidth: {}", imageWidth);
 		std::cout << std::format("\n\tHeight: {}", imageHeight);
 		std::cout << std::format("\n\tData size: {}", imageDataSize);
+
+		bmp BMPFile(std::format("{}_{}.bmp", filename, curImage), imageWidth, imageHeight);
 
 		uint64_t pixelsCopiedAll = 0;
 		size_t numOfTotalSegments = 0;
@@ -129,12 +131,12 @@ int main(int argc, char* argv[])
 				std::cout << std::format("\n\t\t\tNumber of color bytes: {}", segNumColorBytes);
 				std::cout << std::format("\n\t\t\t[Read {}]", bytesRead);
 
-				for (uint16_t i = 0; i < segNumTransparentPx; i++) 
-					output.write(reinterpret_cast<const char*>(&TRANSPARENT_RGB), sizeof TRANSPARENT_RGB);
+				for (uint16_t i = 0; i < segNumTransparentPx; i++)
+					BMPFile.writePixel(TRANSPARENT_RGB);
 				for (uint16_t i = 0; i < segNumColorBytes; i++)
 				{
-					char colorVal[2];
-					input.read(colorVal, 2);
+					char RGB565[2];
+					input.read(RGB565, 2);
 					if (input.fail())
 					{
 						std::cout << "ERROR_READ";
@@ -142,18 +144,14 @@ int main(int argc, char* argv[])
 					bool eof = input.eof();
 					bool good = input.good();
 					bytesRead += 2;
-					output.write(colorVal, 2);
-					if (output.fail() || !output.good() || output.bad())
-					{
-						std::cout << "ERROR_WRITE";
-					}
+					BMPFile.writePixel(RGB565);
+
 					pixelsCopiedinLine++;
 					pixelsCopiedAll++;
 					//std::cout << std::format("\n\t\t\t{:2X}{:2X}", (unsigned int)colorVal[0], (unsigned int)colorVal[1]);
 				}
-				for (uint16_t i = 0; i < segNumTransparentPx; i++) 
-					output.write(reinterpret_cast<const char*>(&TRANSPARENT_RGB), sizeof TRANSPARENT_RGB);
-				pixelsCopiedinLine += segNumTransparentPx * 2;
+				pixelsCopiedinLine += segNumTransparentPx;
+				pixelsCopiedAll += segNumTransparentPx;
 
 				std::cout << std::format("\n\t\t\tTransferred pixels [read {}]", bytesRead);
 			}
@@ -164,7 +162,7 @@ int main(int argc, char* argv[])
 				uint32_t diff = imageWidth - pixelsCopiedinLine;
 				do
 				{
-					output.write(reinterpret_cast<const char*>(&TRANSPARENT_RGB), sizeof TRANSPARENT_RGB);
+					BMPFile.writePixel(TRANSPARENT_RGB);
 					diff--;
 				} while (diff > 0);
 			}
@@ -177,12 +175,10 @@ int main(int argc, char* argv[])
 			uint64_t diff = imageWidth * imageHeight - pixelsCopiedAll;
 			do
 			{
-				output.write(reinterpret_cast<const char*>(&TRANSPARENT_RGB), sizeof TRANSPARENT_RGB);
+				BMPFile.writePixel(TRANSPARENT_RGB);
 				diff--;
 			} while (diff > 0);
 		}
-
-		output.close();
 	}
 
 	return 0;
