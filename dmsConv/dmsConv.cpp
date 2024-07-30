@@ -3,10 +3,11 @@
 #include <string>
 #include <format>
 #include <filesystem>
+#include <array>
 
 #include "bmp.h"
 
-char TRANSPARENT_RGB[] = { 0x00, 0x01 };
+char TRANSPARENT_RGB[] = { 0x01, 0x01, 0x01};
 
 int main(int argc, char* argv[])
 {
@@ -35,7 +36,7 @@ int main(int argc, char* argv[])
 
 	DMS FILE HEADER
 	2 bytes unknown/dummy
-	16-bit file bit value [fileNumColorBits]
+	16-bit file bit value [fileColorType]
 		-> 0x10 0x00: 16-bit RGB565
 		-> 0x08 0x00: 8-bit palette indexed?
 	32-bit layer count (number of sprites/images in the file) [fileNumImages]
@@ -43,27 +44,23 @@ int main(int argc, char* argv[])
 	32 bytes .dms filename (why?) [fileDmsName]
 
 	IMAGE HEADER
-	for 16-bit images:
 		12 bytes unknown
 		32-bit image width
 		32-bit image height
 		88 bytes unknown
-		32-bit image data size / 2
+		32-bit image data size (*2 if RGB565 mode)
 		8 bytes unknown
 
-	for 8-bit images:
-		todo
-
-	LINE DATA
-	16-bit number of segments in current line of image
+	LINE DATA (RGB565: 16-bit values, paletteIndexed: 8-bit values)
+	1x number of segments in current line of image
 
 	SEGMENT DATA
-	16-bit number of completely transparent pixels around the segment
-	16-bit number of color values (RGB565 or palette index)
+	1x number of completely transparent pixels before color values
+	1x number of color values (RGB565 or palette index)
 	<previously mentioned number of color values>
 	*/
 
-	uint16_t fileNumColorBits;
+	uint16_t fileColorType;
 	uint32_t fileNumImages;
 	char fileWavName[32];
 	char fileDmsName[32];
@@ -72,13 +69,20 @@ int main(int argc, char* argv[])
 
 	// read file header
 	input.ignore(2);
-	input.read(reinterpret_cast<char*>(&fileNumColorBits), sizeof fileNumColorBits);
+	input.read(reinterpret_cast<char*>(&fileColorType), sizeof fileColorType);
 	input.read(reinterpret_cast<char*>(&fileNumImages), sizeof fileNumImages);
 	input.read(fileWavName, 32);
 	input.read(fileDmsName, 32);
 
+	// if 8-bits, then there's a palette LUT here (256 * 4 = 1024 bytes, BGR-)
+	std::array<char, 256 * 4> filePaletteLUT;
+	if (fileColorType == 8)
+	{
+		input.read(filePaletteLUT.data(), filePaletteLUT.size());
+	}
+
 	// log
-	std::cout << std::format("\nNumber of color bits: {}", fileNumColorBits);
+	std::cout << std::format("\nNumber of color bits: {}", fileColorType);
 	std::cout << std::format("\nNumber of images in file: {}", fileNumImages);
 	std::cout << std::format("\nAssociated .wav file: {}", fileWavName);
 
@@ -102,32 +106,35 @@ int main(int argc, char* argv[])
 		std::cout << std::format("\n\tHeight: {}", imageHeight);
 		std::cout << std::format("\n\tData size: {}", imageDataSize);
 
-		bmp BMPFile(std::format("{}_{}.bmp", filename, curImage), imageWidth, imageHeight);
+		bool is_paletteIndexed = fileColorType == 8;
+		bmp BMPFile(std::format("{}_{}.bmp", filename, curImage), imageWidth, imageHeight, is_paletteIndexed);
 
 		uint64_t pixelsCopiedAll = 0;
 		size_t numOfTotalSegments = 0;
 		size_t bytesRead = 0;
-		while (bytesRead < imageDataSize * 2)
+		while ((!is_paletteIndexed && bytesRead < imageDataSize * 2) || (is_paletteIndexed && bytesRead < imageDataSize))
 		{
 			numOfTotalSegments++;
 			uint32_t pixelsCopiedinLine = 0;
 
-			uint16_t lineNumSegments;
-			input.read(reinterpret_cast<char*>(&lineNumSegments), sizeof lineNumSegments);
-			bytesRead += sizeof lineNumSegments;
+			uint8_t readSize = is_paletteIndexed ? 1 : 2;
+
+			uint16_t lineNumSegments = 0;
+			input.read(reinterpret_cast<char*>(&lineNumSegments), readSize);
+			bytesRead += readSize;
 			std::cout << std::format("\n\tSegments in line: {} [read {}]", lineNumSegments, bytesRead);
 
 			for (uint16_t curSegment = 0; curSegment < lineNumSegments; curSegment++)
 			{
-				uint16_t segNumTransparentPx;
-				uint16_t segNumColorBytes;
-				input.read(reinterpret_cast<char*>(&segNumTransparentPx), sizeof segNumTransparentPx);
-				input.read(reinterpret_cast<char*>(&segNumColorBytes), sizeof segNumColorBytes);
-				bytesRead += sizeof segNumTransparentPx + sizeof segNumColorBytes;
+				uint16_t segNumTransparentPx = 0;
+				uint16_t segNumColorBytes = 0;
+				input.read(reinterpret_cast<char*>(&segNumTransparentPx), readSize);
+				input.read(reinterpret_cast<char*>(&segNumColorBytes), readSize);
+				bytesRead += readSize*2;
 
 				// log
 				std::cout << std::format("\n\t\tSegment {}:", curSegment);
-				std::cout << std::format("\n\t\t\tNumber of surrounding transparent pixels: {}", segNumTransparentPx);
+				std::cout << std::format("\n\t\t\tNumber of preceeding transparent pixels: {}", segNumTransparentPx);
 				std::cout << std::format("\n\t\t\tNumber of color bytes: {}", segNumColorBytes);
 				std::cout << std::format("\n\t\t\t[Read {}]", bytesRead);
 
@@ -135,20 +142,31 @@ int main(int argc, char* argv[])
 					BMPFile.writePixel(TRANSPARENT_RGB);
 				for (uint16_t i = 0; i < segNumColorBytes; i++)
 				{
-					char RGB565[2];
-					input.read(RGB565, 2);
+					char readVal[2];
+					input.read(readVal, readSize);
+
 					if (input.fail())
 					{
 						std::cout << "ERROR_READ";
 					}
-					bool eof = input.eof();
-					bool good = input.good();
-					bytesRead += 2;
-					BMPFile.writePixel(RGB565);
+
+					bytesRead += fileColorType / 8;
+
+					if(fileColorType == 16)
+						BMPFile.writePixel(readVal);
+					else
+					{
+						uint16_t index = (unsigned char)readVal[0] * 4;
+						char paletteValue[3];
+						for (int i = 0; i < 3; i++)
+						{
+							paletteValue[i] = filePaletteLUT[index + i];
+						}
+						BMPFile.writePixel(paletteValue);
+					}
 
 					pixelsCopiedinLine++;
 					pixelsCopiedAll++;
-					//std::cout << std::format("\n\t\t\t{:2X}{:2X}", (unsigned int)colorVal[0], (unsigned int)colorVal[1]);
 				}
 				pixelsCopiedinLine += segNumTransparentPx;
 				pixelsCopiedAll += segNumTransparentPx;

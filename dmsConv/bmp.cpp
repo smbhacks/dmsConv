@@ -1,12 +1,17 @@
 #include "bmp.h"
 
-bmp::bmp(std::string filename, uint32_t imageWidth, uint32_t imageHeight)
+bmp::bmp(std::string filename, uint32_t imageWidth, uint32_t imageHeight, bool is_24bpp)
     : m_width(imageWidth)
     , m_height(imageHeight)
+    , m_is_24bpp(is_24bpp)
 {
     m_output.open(filename, std::ios::out | std::ios::binary);
 
-    size_t filesize = 54 + 12 + imageWidth * imageHeight * 2;
+    size_t filesize;
+    if (is_24bpp)
+        filesize = 54 + imageWidth * imageHeight * 3;
+    else
+        filesize = 54 + 12 + imageWidth * imageHeight * 2;
 
     int32_t negatedImageHeight = (int32_t)imageHeight * -1;
 
@@ -15,7 +20,7 @@ bmp::bmp(std::string filename, uint32_t imageWidth, uint32_t imageHeight)
         0, 0, 0, 0,           // File size in bytes
         0, 0,                 // Reserved
         0, 0,                 // Reserved
-        14 + 40 + 12, 0, 0, 0 // Offset to pixel data
+        is_24bpp?54:54+12, 0, 0, 0 // Offset to pixel data
     };
 
     unsigned char infoHeader[40] = {
@@ -23,18 +28,14 @@ bmp::bmp(std::string filename, uint32_t imageWidth, uint32_t imageHeight)
         0, 0, 0, 0,           // Image width
         0, 0, 0, 0,           // Image height
         1, 0,                 // Planes
-        16, 0,                // Bits per pixel (16 for RGB565)
-        3, 0, 0, 0,           // Compression (3 = BI_BITFIELDS)
+        is_24bpp?24:16, 0,    // Bits per pixel (16 for RGB565)
+        is_24bpp?0:3, 0, 0, 0,// Compression (3 = BI_BITFIELDS)
         0, 0, 0, 0,           // Image size (can be 0 for uncompressed)
         0, 0, 0, 0,           // X pixels per meter
         0, 0, 0, 0,           // Y pixels per meter
         0, 0, 0, 0,           // Total colors (0 = default)
         0, 0, 0, 0            // Important colors (0 = all)
     };
-
-    uint16_t redMask =   0b1111100000000000;
-    uint16_t greenMask = 0b0000011111100000;
-    uint16_t blueMask =  0b0000000000011111;
 
     // Set file size in header
     fileHeader[2] = (unsigned char)(filesize);
@@ -57,12 +58,18 @@ bmp::bmp(std::string filename, uint32_t imageWidth, uint32_t imageHeight)
     m_output.write(reinterpret_cast<const char*>(fileHeader), sizeof fileHeader);
     m_output.write(reinterpret_cast<const char*>(infoHeader), sizeof infoHeader);
 
-    m_output.write(reinterpret_cast<const char*>(&redMask), 4);
-    m_output.write(reinterpret_cast<const char*>(&greenMask), 4);
-    m_output.write(reinterpret_cast<const char*>(&blueMask), 4);
+    if (!is_24bpp)
+    {
+        uint16_t redMask = 0b1111100000000000;
+        uint16_t greenMask = 0b0000011111100000;
+        uint16_t blueMask = 0b0000000000011111;
+        m_output.write(reinterpret_cast<const char*>(&redMask), 4);
+        m_output.write(reinterpret_cast<const char*>(&greenMask), 4);
+        m_output.write(reinterpret_cast<const char*>(&blueMask), 4);
+    }
 }
 
-void bmp::writePixel(char RGB565[])
+void bmp::writePixel(char value[])
 {
     if (m_Y >= m_height)
     {
@@ -70,7 +77,10 @@ void bmp::writePixel(char RGB565[])
         return;
     }
 
-    m_output.write(RGB565, 2);
+    if (m_is_24bpp)
+        m_output.write(value, 3);
+    else
+        m_output.write(value, 2);
 
     if (m_output.fail() || !m_output.good() || m_output.bad())
     {
